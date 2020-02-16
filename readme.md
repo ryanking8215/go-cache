@@ -5,8 +5,8 @@ Features:
 ## multi implements
 * local - store in local map with ttl support
 * lru - local cache with lru evicted policy.
-* redis string - store in redis string type.
-* redis hash - store in redis hash type.
+* redis string - store in redis string type with ttl support.
+* redis hash - store in redis hash type with ttl support.
 * dummy - dummy cache for placeholder.
 
 ## multi codec
