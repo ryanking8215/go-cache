@@ -3,7 +3,6 @@ package local
 import (
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"github.com/ryanking8215/go-cache"
