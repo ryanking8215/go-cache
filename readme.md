@@ -3,7 +3,8 @@ Cache written by [Golang](https://golang.org).
 
 Features:
 ## multi implements
-* local - store in local map with ttl support
+* local - store in local map with ttl support.
+* simple - using sync.Map for reading performence usage, without ttl support.
 * lru - local cache with lru evicted policy.
 * redis string - store in redis string type with ttl support.
 * redis hash - store in redis hash type with ttl support.
@@ -174,7 +175,6 @@ func main() {
 ```
 
 # TODO
-* Add simple cache implemented by sync.Map for extreme performence usage.
 * Local cache should have a better GC(release expired keys) implement.
 * Redis hash cache has concurrent problem. (implemented by pipeline now, lua script may work I think, or any other good advice).
 * Gob codec support.
