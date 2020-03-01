@@ -1,6 +1,7 @@
 package local
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 
@@ -22,10 +23,11 @@ type LocalCacheConfig struct {
 }
 
 type localCache struct {
+	LocalCacheConfig
 	mu sync.Mutex
 	m  map[interface{}]interface{}
-	t  map[interface{}]time.Time
-	LocalCacheConfig
+	e  map[interface{}]*expireNode
+	eh *expireHeap
 }
 
 var NewCache = NewLocalCache
@@ -36,10 +38,12 @@ func NewLocalCache() *localCache {
 
 func NewLocalCacheWithConfig(cfg LocalCacheConfig) *localCache {
 	c := localCache{
-		m:                make(map[interface{}]interface{}),
-		t:                make(map[interface{}]time.Time),
 		LocalCacheConfig: cfg,
+		m:                make(map[interface{}]interface{}),
+		e:                make(map[interface{}]*expireNode),
+		eh:               &expireHeap{},
 	}
+	heap.Init(c.eh)
 
 	if c.GCInterval > 0 { // Not run gc if equal 0
 		go c.runGC()
@@ -66,20 +70,20 @@ func (c *localCache) gc() {
 	defer c.mu.Unlock()
 
 	size := 0
-	for k, t := range c.t {
-		if size > c.GCOnceSize {
+	for {
+		n := c.eh.Pop().(*expireNode)
+		if n == nil || !n.isExpired(time.Now()) || size > c.GCOnceSize {
 			break
 		}
-		if isExpired(t, time.Now()) {
-			c.del(k)
-			size++
-		}
+		c.delNode(n)
+		size++
 	}
 }
 
-func (c *localCache) del(key interface{}) {
-	delete(c.t, key)
-	delete(c.m, key)
+func (c *localCache) delNode(n *expireNode) {
+	delete(c.m, n.key)
+	delete(c.e, n.key)
+	heap.Remove(c.eh, n.index)
 }
 
 func (c *localCache) Get(key interface{}, options ...cache.Option) (interface{}, error) {
@@ -90,9 +94,9 @@ func (c *localCache) Get(key interface{}, options ...cache.Option) (interface{},
 	if !ok {
 		return nil, cache.ErrNotFound
 	}
-	t, ok := c.t[key]
-	if ok && isExpired(t, time.Now()) {
-		c.del(key)
+	node, ok := c.e[key]
+	if ok && node.isExpired(time.Now()) {
+		c.delNode(node)
 		return nil, cache.ErrNotFound
 	}
 	return v, nil
@@ -107,7 +111,18 @@ func (c *localCache) Set(key, value interface{}, options ...cache.Option) error 
 
 	c.m[key] = value
 	if o.TTL > 0 {
-		c.t[key] = time.Now().Add(o.TTL)
+		expireAt := time.Now().Add(o.TTL)
+		n, ok := c.e[key]
+		if ok { // expire node exists
+			c.eh.update(n, expireAt)
+		} else {
+			n := &expireNode{
+				key:      key,
+				expireAt: expireAt,
+			}
+			c.e[key] = n
+			c.eh.Push(n)
+		}
 	}
 
 	return nil
@@ -123,9 +138,9 @@ func (c *localCache) MGet(keys []interface{}, options ...cache.Option) (map[inte
 		if !ok {
 			continue
 		}
-		t, ok := c.t[key]
-		if ok && isExpired(t, time.Now()) {
-			c.del(key)
+		n, ok := c.e[key]
+		if ok && n.isExpired(time.Now()) {
+			c.delNode(n)
 			continue
 		}
 		ret[key] = v
@@ -144,7 +159,18 @@ func (c *localCache) MSet(keyValues map[interface{}]interface{}, options ...cach
 	for k, v := range keyValues {
 		c.m[k] = v
 		if o.TTL > 0 {
-			c.t[k] = time.Now().Add(o.TTL)
+			expireAt := time.Now().Add(o.TTL)
+			n, ok := c.e[k]
+			if ok {
+				c.eh.update(n, expireAt)
+			} else {
+				n := &expireNode{
+					key:      k,
+					expireAt: expireAt,
+				}
+				c.eh.Push(n)
+				c.e[k] = n
+			}
 		}
 	}
 
@@ -159,9 +185,9 @@ func (c *localCache) Exists(key interface{}, options ...cache.Option) (bool, err
 	if !ok {
 		return false, nil
 	}
-	t, ok := c.t[key]
-	if ok && isExpired(t, time.Now()) {
-		c.del(key)
+	n, ok := c.e[key]
+	if ok && n.isExpired(time.Now()) {
+		c.delNode(n)
 		return false, nil
 	}
 	return true, nil
@@ -170,7 +196,12 @@ func (c *localCache) Exists(key interface{}, options ...cache.Option) (bool, err
 func (c *localCache) Delete(key interface{}, options ...cache.Option) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.del(key)
+	n, ok := c.e[key]
+	if ok { // expire node exists
+		c.delNode(n)
+	} else {
+		delete(c.m, key)
+	}
 	return nil
 }
 
@@ -178,7 +209,9 @@ func (c *localCache) Clear(options ...cache.Option) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.m = make(map[interface{}]interface{})
-	c.t = make(map[interface{}]time.Time)
+	c.e = make(map[interface{}]*expireNode)
+	c.eh = &expireHeap{}
+	heap.Init(c.eh)
 	return nil
 }
 
@@ -186,9 +219,50 @@ func (c *localCache) Codec() cache.Codec {
 	return nil
 }
 
-func isExpired(t, deadline time.Time) bool {
-	if !t.IsZero() && deadline.After(t) {
+type expireNode struct {
+	key      interface{}
+	index    int
+	expireAt time.Time
+}
+
+func (n expireNode) isExpired(deadline time.Time) bool {
+	if !n.expireAt.IsZero() && deadline.After(n.expireAt) {
 		return true
 	}
 	return false
+}
+
+// An ttlHeap is a min-heap of expires
+type expireHeap []*expireNode
+
+func (h expireHeap) Len() int           { return len(h) }
+func (h expireHeap) Less(i, j int) bool { return h[i].expireAt.Before(h[j].expireAt) }
+func (h expireHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+
+func (h *expireHeap) Push(x interface{}) {
+	// Push and Pop use pointer receivers because they modify the slice's length,
+	// not just its contents.
+	n := len(*h)
+	node := x.(*expireNode)
+	node.index = n
+	*h = append(*h, node)
+}
+
+func (h *expireHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	old[n-1] = nil  // avoid memory leak
+	item.index = -1 // for safety
+	*h = old[0 : n-1]
+	return item
+}
+
+func (h *expireHeap) update(n *expireNode, expireAt time.Time) {
+	n.expireAt = expireAt
+	heap.Fix(h, n.index)
 }
