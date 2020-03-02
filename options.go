@@ -27,12 +27,14 @@ func (f optionFunc) apply(o *Options) {
 	f(o)
 }
 
+// WithTTL add TTL to option
 func WithTTL(ttl time.Duration) Option {
 	return optionFunc(func(o *Options) {
 		o.TTL = ttl
 	})
 }
 
+// WithContext add Context to option
 func WithContext(ctx context.Context) Option {
 	return optionFunc(func(o *Options) {
 		o.Ctx = ctx
