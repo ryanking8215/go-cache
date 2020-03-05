@@ -1,8 +1,8 @@
 # Go Cache
-Cache written by [Golang](https://golang.org). 
+Multi-backends Cache written by [Golang](https://golang.org). 
 
 Features:
-## multi implements
+## multi backends
 * local - store in local map with ttl support.
 * simple - using sync.Map for reading performence usage, without ttl support.
 * lru - local cache with lru evicted policy.
